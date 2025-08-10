@@ -27,7 +27,9 @@ Your task is to generate a complete Python script that:
 
 **FORMAT COMPLIANCE**:
 - **JSON Array**: Return list like [answer1, answer2, answer3]
-- **JSON Object**: Return dict like {"question1": answer1, "question2": answer2}
+- **JSON Object**: Return dict using the EXACT key names specified in the response format, NOT the full question text
+- **CRITICAL**: For JSON object format, use the short key names from the format specification (e.g., "total_sales", "top_region", "day_sales_correlation")
+- **KEY MAPPING**: Map each question to its corresponding short key name from the response format
 - **Strings**: Ensure text answers are properly quoted
 - **Numbers**: Return as int/float, not strings
 
@@ -90,6 +92,57 @@ try:
 except Exception as e:
     print(f"Error generating answers: {e}")
     answers = ["Error"] * len(questions)  # Fallback answers
+```
+
+Example structure for JSON object format:
+```python
+import pandas as pd
+import numpy as np
+
+# Initialize answers dictionary with SHORT KEY NAMES from response format
+answers = {}
+
+try:
+    # Map questions to their corresponding short key names from the response format
+    
+    # Question: "What is the total sales across all regions?" → Key: "total_sales"
+    if 'sales' in cleaned_data.columns:
+        total_sales = cleaned_data['sales'].sum()
+        answers['total_sales'] = float(total_sales)
+    else:
+        answers['total_sales'] = 0.0
+    
+    # Question: "Which region has the highest total sales?" → Key: "top_region"  
+    if 'region' in cleaned_data.columns and 'sales' in cleaned_data.columns:
+        region_sales = cleaned_data.groupby('region')['sales'].sum()
+        top_region = region_sales.idxmax() if not region_sales.empty else "Unknown"
+        answers['top_region'] = str(top_region)
+    else:
+        answers['top_region'] = "Unknown"
+    
+    # Question: "What is the correlation between day and sales?" → Key: "day_sales_correlation"
+    if 'date' in cleaned_data.columns and 'sales' in cleaned_data.columns:
+        # Extract day from date and calculate correlation
+        cleaned_data['day'] = pd.to_datetime(cleaned_data['date']).dt.day
+        correlation = cleaned_data['day'].corr(cleaned_data['sales'])
+        answers['day_sales_correlation'] = round(float(correlation), 6)
+    else:
+        answers['day_sales_correlation'] = 0.0
+    
+    # Question: "What is the median sales amount?" → Key: "median_sales"
+    if 'sales' in cleaned_data.columns:
+        median_sales = cleaned_data['sales'].median()
+        answers['median_sales'] = float(median_sales)
+    else:
+        answers['median_sales'] = 0.0
+    
+    print(f"Generated answers for {len(answers)} questions")
+    print(f"Answers: {answers}")
+    
+except Exception as e:
+    print(f"Error generating answers: {e}")
+    # Create fallback with short key names
+    answers = {"total_sales": 0.0, "top_region": "Unknown", "day_sales_correlation": 0.0, "median_sales": 0.0}
 ```
 
 Focus on creating accurate, robust answers that match the exact format requested in the original question.

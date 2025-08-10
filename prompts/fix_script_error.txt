@@ -28,6 +28,12 @@ Your task is to:
 - "Cannot convert" → Add proper type checking and conversion
 - "Invalid literal" → Handle edge cases in data cleaning
 
+**CRITICAL COLUMN CONVERSION ERRORS**:
+- "could not convert string to float: 'Worldwide gross'" → This means the script is trying to convert column headers to numbers
+- **IMMEDIATE FIX**: Remove any pd.to_numeric(), pd.to_numeric(columns=...), or similar column type conversion code
+- **SOLUTION**: Let pandas automatically infer data types - don't force column conversions
+- **ROOT CAUSE**: The script is treating column names as data values instead of using the robust helper functions
+
 **Network/Access Issues**:
 - "Connection error" → Add retry logic and better headers
 - "403/404 errors" → Improve request headers and user agents
@@ -69,6 +75,23 @@ if not table:
         print(f"Using first available table as fallback")
     else:
         raise Exception("No tables found on the webpage")
+```
+
+**CRITICAL ERROR: "could not convert string to float: 'Worldwide gross'"**
+Fix: Remove column type conversion and use robust helper functions
+
+```python
+# WRONG - This causes the error:
+extracted_data = pd.read_html(url)[0]  # pd.read_html tries to convert headers to numbers
+extracted_data = extracted_data.astype({'Worldwide gross': 'float'})  # This fails
+
+# CORRECT - Use the robust helper functions:
+table = find_table_robust(soup)
+headers = extract_headers_robust(table)  # Get actual headers as strings
+rows = extract_rows_robust(table, headers)  # Get data rows
+extracted_data = pd.DataFrame(rows, columns=headers)  # Create DataFrame with proper structure
+
+# Let pandas infer types automatically - don't force conversions
 ```
 
 Focus on creating a working, robust script that handles the specific error while maintaining the original functionality.

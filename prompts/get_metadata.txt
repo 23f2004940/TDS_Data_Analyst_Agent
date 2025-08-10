@@ -33,9 +33,11 @@ Your task is to:
         }
     ],
     "extraction_method": {
-        "approach": "web_scraping/file_parsing/api_call/etc",
-        "tools_needed": ["beautifulsoup", "pandas", "requests", "etc"],
-        "specific_instructions": "detailed steps for extracting this specific data"
+        "approach": "web_scraping/file_parsing/api_call/s3_discovery/etc",
+        "tools_needed": ["beautifulsoup", "pandas", "requests", "duckdb", "boto3", "etc"],
+        "specific_instructions": "detailed steps for extracting this specific data",
+        "discovery_required": true/false,
+        "discovery_method": "For S3/complex sources: First query schema/sample to discover actual column names, then extract based on real columns"
     },
     "data_cleaning_needs": [
         "remove ALL superscripts and citations (e.g., <sup>1</sup>, [1], [a], etc.)",
@@ -55,10 +57,18 @@ Your task is to:
 }
 ```
 
+**CRITICAL FOR COMPLEX DATA SOURCES (S3, APIs, Databases)**:
+- **NEVER ASSUME COLUMN NAMES**: For structured data sources, always recommend discovery first
+- **TWO-STEP APPROACH**: 1) Discover actual schema/columns, 2) Extract using real column names  
+- **SAMPLE FIRST**: Always get a small sample to understand the actual structure
+- **MAP REQUIREMENTS**: Map question requirements to actual available columns
+
 Focus on being specific about:
 - Exactly which table/section contains the needed data
-- What columns are required to answer the specific questions
-- How to identify and extract the right data structure
+- What columns are required to answer the specific questions (but discover actual names first)
+- How to identify and extract the right data structure with schema discovery
 - What cleaning will be needed for analysis
+
+**For S3/Parquet/Database sources**: Always set `discovery_required: true` and provide discovery method.
 
 Be precise and detailed in your analysis to ensure accurate data extraction.

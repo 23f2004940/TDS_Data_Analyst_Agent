@@ -17,3 +17,12 @@ sqlalchemy
 matplotlib
 scipy
 seaborn
+boto3
+botocore
+networkx
+scikit-learn
+plotly
+statsmodels
+pillow
+wordcloud
+textblob

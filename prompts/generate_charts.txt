@@ -40,14 +40,21 @@ Your task is to generate a complete Python script that:
 - PNG compression
 - Remove unnecessary elements
 
+**MULTIPLE CHARTS FOR JSON OBJECT**:
+- If the response format is 'json_object' with multiple chart fields (e.g., 'bar_chart', 'cumulative_sales_chart')
+- Generate ALL required charts and return them as a dictionary
+- Use the exact key names specified in the format description
+- Each chart should be a separate base64 data URI
+
 **OUTPUT FORMAT**: Return ONLY the Python script code, no explanations.
 
 The script should:
 1. Take 'cleaned_data' DataFrame as input
-2. Generate the requested chart using matplotlib
-3. Convert to base64 data URI
-4. Store result in 'chart_base64' variable
-5. Handle errors with fallback empty chart
+2. Generate the requested chart(s) using matplotlib
+3. Convert to base64 data URI(s)
+4. For single chart: Store result in 'chart_base64' variable
+5. For multiple charts: Store results in dictionary with correct key names
+6. Handle errors with fallback empty charts
 
 Example structure:
 ```python
@@ -123,6 +130,67 @@ except Exception as e:
     print(f"Error generating chart: {e}")
     # Fallback: 1x1 transparent PNG
     chart_base64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+```
+
+Example for multiple charts (JSON object format):
+```python
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
+import pandas as pd
+import numpy as np
+import base64
+from io import BytesIO
+
+# Initialize charts dictionary for multiple charts
+charts = {}
+
+try:
+    # Chart 1: Bar chart by region
+    if 'region' in cleaned_data.columns and 'sales' in cleaned_data.columns:
+        plt.figure(figsize=(8, 6), dpi=100)
+        region_sales = cleaned_data.groupby('region')['sales'].sum()
+        plt.bar(region_sales.index, region_sales.values, color='blue')
+        plt.xlabel('Region')
+        plt.ylabel('Total Sales')
+        plt.title('Total Sales by Region')
+        plt.xticks(rotation=45)
+        
+        # Convert to base64
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png', bbox_inches='tight', dpi=100)
+        buffer.seek(0)
+        image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        charts['bar_chart'] = f"data:image/png;base64,{image_base64}"
+        plt.close()
+    
+    # Chart 2: Cumulative sales chart
+    if 'date' in cleaned_data.columns and 'sales' in cleaned_data.columns:
+        plt.figure(figsize=(8, 6), dpi=100)
+        cleaned_data_sorted = cleaned_data.sort_values('date')
+        cumulative_sales = cleaned_data_sorted['sales'].cumsum()
+        plt.plot(range(len(cumulative_sales)), cumulative_sales, marker='o')
+        plt.xlabel('Order Number')
+        plt.ylabel('Cumulative Sales')
+        plt.title('Cumulative Sales Over Time')
+        plt.grid(True, alpha=0.3)
+        
+        # Convert to base64
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png', bbox_inches='tight', dpi=100)
+        buffer.seek(0)
+        image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        charts['cumulative_sales_chart'] = f"data:image/png;base64,{image_base64}"
+        plt.close()
+    
+    # Set the result - for multiple charts, use the dictionary
+    chart_base64 = charts if len(charts) > 1 else list(charts.values())[0] if charts else None
+    
+except Exception as e:
+    print(f"Error generating charts: {e}")
+    # Fallback for multiple charts
+    fallback_chart = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    chart_base64 = {'bar_chart': fallback_chart, 'cumulative_sales_chart': fallback_chart}
 ```
 
 Focus on creating accurate, well-styled charts that meet the specific requirements and size constraints.
