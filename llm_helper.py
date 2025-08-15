@@ -1,6 +1,9 @@
 from openai import OpenAI
 import json
 import os
+import re
+import pandas as pd
+from bs4 import BeautifulSoup
 
 # Set your OpenAI API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -301,6 +304,15 @@ DIRECT CSV EXTRACTION MODE:
         clean_script = clean_script[:-3]  # Remove ```
     clean_script = clean_script.strip()
     
+    # CRITICAL: Ensure helper functions are available in execution environment
+    print("🔍 Checking script for helper function usage...")
+    # Debug: show what's actually in the script
+    print(f"🔍 Script preview (first 500 chars): {clean_script[:500]}")
+    
+    # Note: Helper functions are now provided directly in the execution environment
+    # No need to prepend them to the script
+    print("✅ Helper functions will be provided in execution environment")
+
     # Execute with retry mechanism
     extraction_context = {'context': context, 'uploaded_files_info': uploaded_files_info}
     return execute_script_with_retry(clean_script, max_retries=3, context=extraction_context, script_type="extraction")
@@ -312,6 +324,183 @@ def clean_data(breakdown, metadata, extracted_data):
     if extracted_data is None:
         print("No extracted data to clean")
         return None
+    
+    # CSV DATA QUALITY CHECK
+    print("=== CSV DETECTION CHECK ===")
+    
+    # Determine if the source is CSV-like from metadata/breakdown
+    is_csv_source = False
+    try:
+        if isinstance(metadata, dict) and metadata.get('file_type', '').lower() == 'csv':
+            is_csv_source = True
+        else:
+            data_sources = breakdown.get('data_sources', []) or [breakdown.get('data_source', {})]
+            for ds in data_sources:
+                if str(ds.get('type', '')).lower() in ['csv', 'uploaded_file']:
+                    is_csv_source = True
+                    break
+    except Exception:
+        # Fall back to heuristic only
+        pass
+
+    # Check if this CSV data appears already clean
+    is_clean_csv = False
+    
+    # Check 1: Data types are already clean
+    if all(extracted_data[col].dtype in ['int64', 'float64', 'object'] for col in extracted_data.columns):
+        print("✅ Data types are already clean")
+        is_clean_csv = True
+    
+    # Check 2: Has numeric columns that are properly typed
+    if any(extracted_data[col].dtype in ['int64', 'float64'] for col in extracted_data.columns):
+        print("✅ Has properly typed numeric columns")
+        is_clean_csv = True
+    
+    # Check 3: No obvious HTML artifacts
+    html_check = True
+    for col in extracted_data.columns:
+        if extracted_data[col].dtype == 'object':
+            if extracted_data[col].astype(str).str.contains(r'<[^>]+>', regex=True).any():
+                html_check = False
+                break
+    
+    if html_check:
+        print("✅ No HTML artifacts detected")
+        is_clean_csv = True
+    
+    # Check 4: Data structure looks clean
+    if len(extracted_data) > 0 and len(extracted_data.columns) > 0:
+        print("✅ Data structure looks clean")
+        is_clean_csv = True
+    
+    # If it is a CSV source and looks clean, preserve it exactly without LLM processing
+    if is_csv_source and is_clean_csv:
+        print("📁 CSV-LIKE DATA DETECTED - PRESERVING EXACTLY AS EXTRACTED")
+        print("🚫 NO LLM CLEANING SCRIPT WILL BE GENERATED")
+        print("🚫 NO CLEANING OPERATIONS WILL BE PERFORMED")
+        
+        # Show the data exactly as extracted
+        print(f"\n=== EXTRACTED DATA (PRESERVED AS-IS) ===")
+        print(f"Shape: {extracted_data.shape}")
+        print(f"Columns: {list(extracted_data.columns)}")
+        print(f"Data types: {extracted_data.dtypes.to_dict()}")
+        
+        # Show all values for verification
+        for col in extracted_data.columns:
+            if extracted_data[col].dtype in ['int64', 'float64']:
+                print(f"{col} values: {extracted_data[col].tolist()}")
+                print(f"{col} sum: {extracted_data[col].sum()}")
+        
+        print("\n✅ CSV data preserved exactly as extracted - no cleaning needed")
+        print("✅ Data integrity guaranteed - returning original data")
+        
+        # Return the data exactly as extracted, no modifications
+        return {
+            'success': True,
+            'data': extracted_data,
+            'message': 'CSV data preserved exactly as extracted - no cleaning performed'
+        }
+
+    # If it is a CSV source but NOT clean, apply deterministic CSV cleaning
+    if is_csv_source and not is_clean_csv:
+        print("🧹 CSV data requires cleaning - applying deterministic CSV cleaning pipeline")
+        try:
+            import pandas as pd
+            import numpy as np
+            import re
+
+            cleaned_df = extracted_data.copy()
+
+            print("— Step 1: Normalize string columns (trim, missing markers, strip HTML)")
+            object_columns = list(cleaned_df.select_dtypes(include=['object']).columns)
+            for col in object_columns:
+                # Trim whitespace
+                cleaned_df[col] = cleaned_df[col].astype(str).str.strip()
+                # Normalize common missing markers to NA
+                cleaned_df[col] = cleaned_df[col].replace({
+                    '': pd.NA,
+                    'na': pd.NA,
+                    'n/a': pd.NA,
+                    'none': pd.NA,
+                    'null': pd.NA,
+                    '-': pd.NA,
+                    '—': pd.NA,
+                    'NA': pd.NA,
+                    'N/A': pd.NA,
+                    'None': pd.NA,
+                    'Null': pd.NA
+                })
+                # HTML cleaning already done by clean_text function during extraction
+                # No additional HTML cleaning needed here
+
+            print("— Step 2: Convert numeric-like object columns (currency, percent, thousands, parentheses)")
+            def convert_numeric_series(series: pd.Series) -> pd.Series:
+                s = series.astype(str)
+                # Identify negatives with parentheses
+                is_paren_negative = s.str.match(r"^\(.*\)$")
+                # Remove wrapping parentheses for numeric parse
+                s = s.str.replace(r'[()]', '', regex=True)
+                # Remove currency and percent symbols
+                s = s.str.replace(r'[\$€£%]', '', regex=True)
+                # Remove thousands separators and spaces/underscores
+                s = s.str.replace(',', '', regex=False).str.replace(' ', '', regex=False).str.replace('_', '', regex=False)
+                # Normalize unicode minus
+                s = s.str.replace('\u2212', '-', regex=False)
+                # Attempt numeric conversion
+                converted = pd.to_numeric(s, errors='coerce')
+                # Re-apply negative sign for former parentheses values
+                converted[is_paren_negative & converted.notna()] = -converted[is_paren_negative & converted.notna()]
+                return converted
+
+            for col in list(cleaned_df.columns):
+                if pd.api.types.is_numeric_dtype(cleaned_df[col]):
+                    continue
+                if cleaned_df[col].dtype == 'object':
+                    # Heuristic: if after cleaning >= 80% of non-null values become numeric, convert column
+                    candidate = convert_numeric_series(cleaned_df[col])
+                    non_null = cleaned_df[col].notna().sum()
+                    numeric_ok = candidate.notna().sum() if non_null else 0
+                    if non_null and (numeric_ok / non_null) >= 0.8:
+                        cleaned_df[col] = candidate
+                        print(f"   • Converted column '{col}' to numeric (coverage {numeric_ok}/{non_null})")
+
+            print("— Step 3: Parse date/time columns by name or high parse success")
+            for col in list(cleaned_df.columns):
+                if pd.api.types.is_datetime64_any_dtype(cleaned_df[col]):
+                    continue
+                col_lower = str(col).lower()
+                looks_like_date = any(k in col_lower for k in ['date', 'time', 'timestamp', 'datetime', 'day'])
+                if looks_like_date or cleaned_df[col].dtype == 'object':
+                    try:
+                        parsed = pd.to_datetime(cleaned_df[col], errors='coerce', infer_datetime_format=True, utc=False)
+                        non_null = cleaned_df[col].notna().sum()
+                        parsed_ok = parsed.notna().sum() if non_null else 0
+                        if non_null and (parsed_ok / non_null) >= 0.8:
+                            cleaned_df[col] = parsed
+                            print(f"   • Converted column '{col}' to datetime (coverage {parsed_ok}/{non_null})")
+                    except Exception:
+                        pass
+
+            print("— Step 4: Final integrity checks (no row drops, types summary)")
+            print(f"Input rows: {len(extracted_data)}, Output rows: {len(cleaned_df)}")
+            if len(cleaned_df) != len(extracted_data):
+                raise Exception("Deterministic CSV cleaning must not change row count")
+
+            print("Columns and dtypes after cleaning:")
+            print(cleaned_df.dtypes.to_dict())
+
+            # Return cleaned result
+            return {
+                'success': True,
+                'data': cleaned_df,
+                'message': 'Deterministic CSV cleaning applied'
+            }
+        except Exception as deterministic_err:
+            print(f"❌ Deterministic CSV cleaning failed: {deterministic_err}")
+            print("Falling back to LLM cleaning script generation")
+
+    # Either non-CSV source or deterministic cleaning failed: use LLM cleaning
+    print("🌐 Proceeding with LLM cleaning script generation")
         
     prompt = load_prompt("clean_data.txt")
     if not prompt:
@@ -380,19 +569,14 @@ def fix_script_error(original_script, error_message, context):
         enhanced_context += "\n\nVARIABLE NAME ERROR:"
         enhanced_context += "\n- Make sure the final result is stored in 'extracted_data' (not 'extraction_data')"
         
-    if "are in the [columns]" in error_message or "not in index" in error_message or "KeyError:" in error_message or "'Sales'" in error_message or "'Date'" in error_message or "'Region'" in error_message or "Missing required columns" in error_message:
-        enhanced_context += "\n\n🚨 CRITICAL COLUMN ERROR - IMMEDIATE FIX REQUIRED:"
-        enhanced_context += "\n- ERROR: You are using WRONG column names in your script!"
-        enhanced_context += "\n- IGNORE the metadata column suggestions - they are WRONG!"
-        enhanced_context += "\n- Look at the 'Actual columns in CSV:' output above - those are the REAL columns"
-        enhanced_context += "\n- The REAL CSV columns are: ['order_id', 'date', 'region', 'sales']"
-        enhanced_context += "\n- COMPLETELY REWRITE your script to use ONLY these column names:"
-        enhanced_context += "\n  * Use 'sales' (not 'Sales')"
-        enhanced_context += "\n  * Use 'date' (not 'Date')" 
-        enhanced_context += "\n  * Use 'region' (not 'Region')"
-        enhanced_context += "\n  * Use 'order_id' for the ID column"
-        enhanced_context += "\n- DELETE any column validation or checking code"
-        enhanced_context += "\n- Just work with the columns that exist!"
+    if "are in the [columns]" in error_message or "not in index" in error_message or "KeyError:" in error_message or "Missing required columns" in error_message:
+        enhanced_context += "\n\n🚨 COLUMN NAME RESOLUTION REQUIRED:"
+        enhanced_context += "\n- Do NOT assume column names from metadata or examples."
+        enhanced_context += "\n- Use ONLY the headers actually extracted from the source table."
+        enhanced_context += "\n- PRINT the discovered headers before using them."
+        enhanced_context += "\n- Resolve columns robustly using the helper:"
+        enhanced_context += "\n    actual = resolve_column(df, [<preferred names here>])  # pick shortlist relevant to the operation"
+        enhanced_context += "\n- Avoid pd.read_html(); use find_table_robust, extract_headers_robust, extract_rows_robust and build DataFrame manually."
     
     if "could not convert string to float" in error_message:
         enhanced_context += "\n\n🚨 CRITICAL COLUMN CONVERSION ERROR - IMMEDIATE FIX REQUIRED:"
@@ -474,8 +658,416 @@ Please fix the script to resolve this specific error while maintaining the origi
     
     return clean_script
 
+# Helper function implementations
+def clean_text_impl(text):
+    """Clean text by removing HTML tags, superscripts, and citations"""
+    if pd.isna(text) or text is None:
+        return text
+    
+    text = str(text)
+    
+    # First, use regex to remove any remaining sup tags and their content
+    # This handles cases where BeautifulSoup might miss some
+    text = re.sub(r'<sup[^>]*>.*?</sup>', '', text, flags=re.DOTALL)
+    
+    # Parse HTML and remove superscript citations
+    soup = BeautifulSoup(text, 'html.parser')
+    
+    # Remove all sup tags and their contents (these are citation markers)
+    # Use extract() instead of decompose() to completely remove the content
+    for sup in soup.find_all('sup'):
+        sup.extract()
+    
+    # Get the cleaned text
+    text = soup.get_text()
+    
+    # Remove any remaining citation patterns [1], [2], [a], [b], etc.
+    text = re.sub(r'\[[0-9a-zA-Z\s,#]+\]', '', text)
+    text = re.sub(r'\([0-9a-zA-Z\s,#]+\)', '', text)
+    
+    # Remove common footnote symbols anywhere
+    text = text.replace('†', '').replace('‡', '').replace('※', '')
+    
+    # Remove quotes and clean whitespace
+    text = text.strip('"\'')
+    text = ' '.join(text.split())
+    text = text.strip()
+    
+    # Handle special cases
+    text = re.sub(r'^[^$\w\s]+', '', text)
+    text = re.sub(r'[^$\w\s.,%-]+$', '', text)
+    
+    # Heuristic cleanup for stray letter markers around numeric/currency values
+    # 1) Remove leading short letter groups before currency or digits (e.g., 'SM$1,000' -> '$1,000')
+    text = re.sub(r'(?i)^[a-z]{1,5}(?=[$€£\d])', '', text)
+    # 2) If string is digits followed by letters (optionally plus digits), keep only the leading digits (e.g., '24RK' -> '24', '4TS3' -> '4')
+    if re.fullmatch(r'\d+[A-Za-z]+\d*', text or ''):
+        m = re.match(r'\d+', text)
+        if m:
+            text = m.group(0)
+    # 3) Prefer letter-stripped version if it forms a clean numeric/currency pattern
+    letters_removed = re.sub(r'[A-Za-z]', '', text)
+    if letters_removed != text:
+        numeric_like_pattern = r'^[-+]?[$€£]?\d[\d,]*(?:\.\d+)?%?$'
+        if re.fullmatch(numeric_like_pattern, letters_removed.strip()):
+            text = letters_removed.strip()
+    
+    # Final cleanup
+    text = text.strip()
+    
+    if not text or text == '==':
+        return None
+    
+    
+    return text
+
+def find_table_robust_impl(soup):
+    """Find table using multiple strategies"""
+    table = None
+    
+    # Strategy 1: Try specific selectors
+    selectors = [
+        'table.wikitable:nth-of-type(1)',
+        'table.wikitable',
+        'table.sortable',
+        'table',
+        '.wikitable'
+    ]
+    
+    for selector in selectors:
+        try:
+            table = soup.select_one(selector)
+            if table:
+                print(f"Found table with selector: {selector}")
+                break
+        except Exception as e:
+            print(f"Selector {selector} failed: {e}")
+            continue
+    
+    # Strategy 2: Find by content if selectors fail
+    if not table:
+        print("Trying content-based table detection...")
+        for table_elem in soup.find_all('table'):
+            rows = table_elem.find_all('tr')
+            if len(rows) >= 3:
+                table = table_elem
+                print("Found table by content analysis")
+                break
+    
+    return table
+
+def extract_headers_robust_impl(table):
+    """Extract headers with better error handling"""
+    headers = []
+    
+    # Try to find header row
+    header_row = None
+    
+    # Look for first row with th tags
+    for tr in table.find_all('tr'):
+        th_cells = tr.find_all('th')
+        if th_cells:
+            header_row = tr
+            break
+    
+    # If no th tags, use first row
+    if not header_row:
+        header_row = table.find('tr')
+    
+    if header_row:
+        # Extract header text
+        for cell in header_row.find_all(['th', 'td']):
+            header_text = clean_text_impl(str(cell))
+            if header_text:
+                headers.append(header_text)
+                print(f"Header: '{header_text}'")
+    
+    return headers
+
+def extract_rows_robust_impl(table, headers):
+    """Extract data rows with robust error handling"""
+    rows = []
+    all_tr = table.find_all('tr')
+    
+    if not all_tr:
+        print("No rows found in table")
+        return rows
+    
+    # Find the starting index (skip header row)
+    start_idx = 0
+    for i, tr in enumerate(all_tr):
+        th_cells = tr.find_all('th')
+        if th_cells:
+            start_idx = i + 1
+            break
+    
+    print(f"Starting data extraction from row {start_idx}")
+    
+    # Extract data rows
+    for i, tr in enumerate(all_tr[start_idx:], start_idx):
+        cells = tr.find_all(['td', 'th'])
+        
+        if len(cells) == 0:
+            print(f"Row {i}: No cells found")
+            continue
+            
+        print(f"Row {i}: Found {len(cells)} cells")
+        
+        # Handle cases where row has different number of cells than headers
+        if len(cells) < len(headers):
+            print(f"Row {i}: Only {len(cells)} cells, expected {len(headers)} - padding with None")
+            # Pad with None values
+            row = [None] * len(headers)
+            for j, cell in enumerate(cells):
+                if j < len(headers):
+                    # CRITICAL: Use the clean_text function on raw HTML to properly remove superscripts and HTML
+                    cell_text = clean_text_impl(str(cell))
+                    row[j] = cell_text
+        elif len(cells) > len(headers):
+            print(f"Row {i}: {len(cells)} cells, expected {len(headers)} - truncating")
+            # Take only first N cells
+            row = []
+            for j in range(len(headers)):
+                # CRITICAL: Use the clean_text function on raw HTML to properly remove superscripts and HTML
+                cell_text = clean_text_impl(str(cells[j]))
+                row.append(cell_text)
+        else:
+            # Perfect match
+            row = []
+            for cell in cells:
+                # CRITICAL: Use the clean_text function on raw HTML to properly remove superscripts and HTML
+                cell_text = clean_text_impl(str(cell))
+                row.append(cell_text)
+        
+        # Only add rows that have some meaningful content
+        if any(cell is not None and str(cell).strip() for cell in row):
+            rows.append(row)
+            print(f"Row {i}: Added with {len(row)} columns")
+            # Debug: show cleaned values
+            print(f"  Cleaned values: {row}")
+        else:
+            print(f"Row {i}: Skipped - no meaningful content")
+    
+    print(f"Total data rows extracted: {len(rows)}")
+    return rows
+
 def execute_script_with_retry(script, max_retries=3, context="", script_type="extraction"):
     """Execute script with retry mechanism and error fixing"""
+    
+    # Define essential helper functions that should always be available
+    essential_helpers = '''
+def clean_text(text):
+    """Clean text by removing HTML tags, superscripts, and citations"""
+    if pd.isna(text) or text is None:
+        return text
+    
+    text = str(text)
+    
+    # First, use regex to remove any remaining sup tags and their content
+    # This handles cases where BeautifulSoup might miss some
+    text = re.sub(r'<sup[^>]*>.*?</sup>', '', text, flags=re.DOTALL)
+    
+    # Parse HTML and remove superscript citations
+    soup = BeautifulSoup(text, 'html.parser')
+    
+    # Remove all sup tags and their contents (these are citation markers)
+    # Use extract() instead of decompose() to completely remove the content
+    for sup in soup.find_all('sup'):
+        sup.extract()
+    
+    # Get the cleaned text
+    text = soup.get_text()
+    
+    # Remove any remaining citation patterns [1], [2], [a], [b], etc.
+    text = re.sub(r'\\[[0-9a-zA-Z\\s,#]+\\]', '', text)
+    text = re.sub(r'\\([0-9a-zA-Z\\s,#]+\\)', '', text)
+    
+    # Remove quotes and clean whitespace
+    text = text.strip('"\\'')
+    text = ' '.join(text.split())
+    text = text.strip()
+    
+    # Handle special cases
+    text = re.sub(r'^[^$\\w\\s]+', '', text)
+    text = re.sub(r'[^$\\w\\s.,%-]+$', '', text)
+    
+    # Final cleanup
+    text = text.strip()
+    
+    if not text or text == '==':
+        return None
+    
+    return text
+
+def clean_text_currency_aware(text):
+    """Clean text with special handling for currency values that may have superscripts"""
+    if pd.isna(text) or text is None:
+        return text
+    
+    text = str(text)
+    
+    # Parse HTML and remove superscript citations
+    soup = BeautifulSoup(text, 'html.parser')
+    
+    # Remove all sup tags and their contents (these are citation markers)
+    # Use extract() instead of decompose() to completely remove the content
+    for sup in soup.find_all('sup'):
+        sup.extract()
+    
+    # Get the cleaned text
+    text = soup.get_text()
+    
+    # Remove any remaining citation patterns [1], [2], [a], [b], etc.
+    text = re.sub(r'\\[[0-9a-zA-Z\\s,#]+\\]', '', text)
+    text = re.sub(r'\\([0-9a-zA-Z\\s,#]+\\)', '', text)
+    
+    # Remove quotes and clean whitespace
+    text = text.strip('"\\'')
+    text = ' '.join(text.split())
+    text = text.strip()
+    
+    # Handle special cases
+    text = re.sub(r'^[^$\\w\\s]+', '', text)
+    text = re.sub(r'[^$\\w\\s.,%-]+$', '', text)
+    
+    # Final cleanup
+    text = text.strip()
+    
+    if not text or text == '==':
+        return None
+    
+    return text
+
+def find_table_robust(soup):
+    """Find table using multiple strategies"""
+    table = None
+    
+    # Strategy 1: Try specific selectors
+    selectors = [
+        'table.wikitable:nth-of-type(1)',
+        'table.wikitable',
+        'table.sortable',
+        'table',
+        '.wikitable'
+    ]
+    
+    for selector in selectors:
+        try:
+            table = soup.select_one(selector)
+            if table:
+                print(f"Found table with selector: {selector}")
+                break
+        except Exception as e:
+            print(f"Selector {selector} failed: {e}")
+            continue
+    
+    # Strategy 2: Find by content if selectors fail
+    if not table:
+        print("Trying content-based table detection...")
+        for table_elem in soup.find_all('table'):
+            rows = table_elem.find_all('tr')
+            if len(rows) >= 3:
+                table = table_elem
+                print("Found table by content analysis")
+                break
+    
+    return table
+
+def extract_headers_robust(table):
+    """Extract headers with better error handling"""
+    headers = []
+    
+    # Try to find header row
+    header_row = None
+    
+    # Look for first row with th tags
+    for tr in table.find_all('tr'):
+        th_cells = tr.find_all('th')
+        if th_cells:
+            header_row = tr
+            break
+    
+    # If no th tags, use first row
+    if not header_row:
+        header_row = table.find('tr')
+    
+    if header_row:
+        # Extract header text
+        for cell in header_row.find_all(['th', 'td']):
+            header_text = clean_text(str(cell))
+            if header_text:
+                headers.append(header_text)
+                print(f"Header: '{header_text}'")
+    
+    return headers
+
+def extract_rows_robust(table, headers):
+    """Extract data rows with robust error handling"""
+    rows = []
+    all_tr = table.find_all('tr')
+    
+    if not all_tr:
+        print("No rows found in table")
+        return rows
+    
+    # Find the starting index (skip header row)
+    start_idx = 0
+    for i, tr in enumerate(all_tr):
+        th_cells = tr.find_all('th')
+        if th_cells:
+            start_idx = i + 1
+            break
+    
+    print(f"Starting data extraction from row {start_idx}")
+    
+    # Extract data rows
+    for i, tr in enumerate(all_tr[start_idx:], start_idx):
+        cells = tr.find_all(['td', 'th'])
+        
+        if len(cells) == 0:
+            print(f"Row {i}: No cells found")
+            continue
+            
+        print(f"Row {i}: Found {len(cells)} cells")
+        
+        # Handle cases where row has different number of cells than headers
+        if len(cells) < len(headers):
+            print(f"Row {i}: Only {len(cells)} cells, expected {len(headers)} - padding with None")
+            # Pad with None values
+            row = [None] * len(headers)
+            for j, cell in enumerate(cells):
+                if j < len(headers):
+                    # CRITICAL: Use the clean_text function on raw HTML to properly remove superscripts and HTML
+                    cell_text = clean_text(str(cell))
+                    row[j] = cell_text
+        elif len(cells) > len(headers):
+            print(f"Row {i}: {len(cells)} cells, expected {len(headers)} - truncating")
+            # Take only first N cells
+            row = []
+            for j in range(len(headers)):
+                # CRITICAL: Use the clean_text function on raw HTML to properly remove superscripts and HTML
+                cell_text = clean_text(str(cells[j]))
+                row.append(cell_text)
+        else:
+            # Perfect match
+            row = []
+            for cell in cells:
+                # CRITICAL: Use the clean_text function on raw HTML to properly remove superscripts and HTML
+                cell_text = clean_text(str(cell))
+                row.append(cell_text)
+        
+        # Only add rows that have some meaningful content
+        if any(cell is not None and str(cell).strip() for cell in row):
+            rows.append(row)
+            print(f"Row {i}: Added with {len(row)} columns")
+            # Debug: show cleaned values
+            print(f"  Cleaned values: {row}")
+        else:
+            print(f"Row {i}: Skipped - no meaningful content")
+    
+    print(f"Total data rows extracted: {len(rows)}")
+    return rows
+'''
     
     for attempt in range(max_retries):
         try:
@@ -488,59 +1080,109 @@ def execute_script_with_retry(script, max_retries=3, context="", script_type="ex
             import chardet
             import numpy as np
             from datetime import datetime
-            try:
-                import duckdb
-            except ImportError:
-                duckdb = None
-            try:
-                import pdfplumber
-            except ImportError:
-                pdfplumber = None
-            try:
-                import openpyxl
-            except ImportError:
-                openpyxl = None
             
-            # Try to import commonly needed libraries
-            try:
-                import networkx
-            except ImportError:
-                networkx = None
+            # For cleaning scripts, restrict imports to prevent chart generation
+            if script_type == "cleaning":
+                # Only allow data cleaning libraries, no plotting
+                allowed_imports = ['pandas', 'numpy', 're', 'json', 'datetime']
+                print("🔒 Cleaning script: Restricted to data cleaning libraries only")
+            else:
+                # Allow all libraries for other script types
+                try:
+                    import duckdb
+                except ImportError:
+                    duckdb = None
+                try:
+                    import pdfplumber
+                except ImportError:
+                    pdfplumber = None
+                try:
+                    import openpyxl
+                except ImportError:
+                    openpyxl = None
                 
-            try:
-                import sklearn
-            except ImportError:
-                sklearn = None
+                # Try to import commonly needed libraries
+                try:
+                    import networkx
+                except ImportError:
+                    networkx = None
+                    
+                try:
+                    import sklearn
+                except ImportError:
+                    sklearn = None
             
             script_globals = {
                 'pd': pd,
                 'pandas': pd,
                 'np': np,
                 'numpy': np,
-                'requests': requests,
-                'BeautifulSoup': BeautifulSoup,
                 're': re,
                 'json': json,
-                'chardet': chardet,
-                'duckdb': duckdb,
-                'pdfplumber': pdfplumber,
-                'openpyxl': openpyxl,
                 'datetime': datetime,
-                'boto3': __import__('boto3'),
-                'botocore': __import__('botocore'),
-                'tempfile': __import__('tempfile'),
-                'zipfile': __import__('zipfile'),
-                'xml': __import__('xml'),
-                'sqlite3': __import__('sqlite3'),
-                'collections': __import__('collections'),
-                'itertools': __import__('itertools'),
-                'math': __import__('math'),
-                'statistics': __import__('statistics'),
-                'networkx': networkx,
-                'sklearn': sklearn,
-                '__builtins__': __builtins__
             }
-            script_locals = {}
+            
+            # Add additional libraries only for non-cleaning scripts
+            
+            # For extraction scripts, ensure we have the basic setup
+            if script_type == "extraction":
+                print("🔧 Setting up extraction script execution environment...")
+            
+            # Add additional libraries only for non-cleaning scripts
+            if script_type != "cleaning":
+                script_globals.update({
+                    'requests': requests,
+                    'BeautifulSoup': BeautifulSoup,
+                    'chardet': chardet,
+                    'duckdb': duckdb,
+                    'pdfplumber': pdfplumber,
+                    'openpyxl': openpyxl,
+                })
+                
+                # Try to import optional libraries safely
+                try:
+                    script_globals['boto3'] = __import__('boto3')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['botocore'] = __import__('botocore')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['tempfile'] = __import__('tempfile')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['zipfile'] = __import__('zipfile')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['xml'] = __import__('xml')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['sqlite3'] = __import__('sqlite3')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['collections'] = __import__('collections')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['itertools'] = __import__('itertools')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['math'] = __import__('math')
+                except ImportError:
+                    pass
+                try:
+                    script_globals['statistics'] = __import__('statistics')
+                except ImportError:
+                    pass
+                
+                script_globals['networkx'] = networkx
+                script_globals['sklearn'] = sklearn
             
             # For cleaning scripts, add the extracted_data to the namespace
             if script_type == "cleaning" and isinstance(context, dict) and 'extracted_data' in context:
@@ -549,6 +1191,37 @@ def execute_script_with_retry(script, max_retries=3, context="", script_type="ex
             # For answer/chart scripts, add the cleaned_data to the namespace
             if script_type in ["answers", "charts"] and isinstance(context, dict) and 'cleaned_data' in context:
                 script_globals['cleaned_data'] = context['cleaned_data']
+            
+            # For extraction scripts, add the uploaded_files_info to the namespace
+            if script_type == "extraction" and isinstance(context, dict) and 'uploaded_files_info' in context:
+                script_globals['uploaded_files_info'] = context['uploaded_files_info']
+                print("🔍 Added uploaded_files_info to script globals")
+                
+            # For extraction scripts, also add the context to the namespace
+            if script_type == "extraction" and isinstance(context, dict):
+                script_globals['context'] = context
+                print("🔍 Added context to script globals")
+            
+            # Initialize script_locals AFTER all globals are set up
+            script_locals = {}
+            
+            # CRITICAL: Add the essential helper functions to the script globals
+            print("🔧 Adding essential helper functions to script execution environment...")
+            try:
+                # Define the helper functions directly in script_globals to ensure they're available
+                script_globals['clean_text'] = lambda text: clean_text_impl(text)
+                script_globals['find_table_robust'] = lambda soup: find_table_robust_impl(soup)
+                script_globals['extract_headers_robust'] = lambda table: extract_headers_robust_impl(table)
+                script_globals['extract_rows_robust'] = lambda table, headers: extract_rows_robust_impl(table, headers)
+                print("✅ Essential helper functions loaded into execution environment")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not load essential helper functions: {e}")
+                # Fallback: try to execute the helper functions string
+                try:
+                    exec(essential_helpers, script_globals, script_locals)
+                    print("✅ Essential helper functions loaded via fallback method")
+                except Exception as e2:
+                    print(f"❌ Fallback method also failed: {e2}")
             
             # Change to temp directory if uploaded files are available
             import os

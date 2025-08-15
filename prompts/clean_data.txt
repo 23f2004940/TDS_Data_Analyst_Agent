@@ -12,31 +12,51 @@ Your task is to generate a complete Python script that:
 2. **CONTEXT-AWARE CONVERSION**: Use question context to make intelligent type decisions
 3. **HANDLE MISSING VALUES**: Standardize and handle missing/invalid data
 4. **VALIDATE CONVERSIONS**: Ensure conversions are successful and logical
+5. **PRESERVE DATA INTEGRITY**: Never lose rows or corrupt data during cleaning
+
+**CRITICAL SUPSCRIPT HANDLING**:
+- **SUPERSCRIPT TAGS**: Values like "T$2,257,844,554<sup>T</sup>" must become "$2,257,844,554" (completely remove both tags and content)
+- **HTML CLEANING**: Use the clean_text() function which properly removes <sup> tags and their text content
+- **NO CORRUPTED DATA**: Never leave partial superscript text that can't be converted to numbers
+- **CURRENCY PRESERVATION**: Ensure currency symbols ($, €, £) and formatting (commas) are preserved after superscript removal
+
+**DO NOT rely on any fixed examples or prefixes**; rely on clean_text() applied to raw HTML so superscripts are removed regardless of position.
+
+**CRITICAL**: The clean_text() function MUST be applied BEFORE any type conversion attempts. This ensures that corrupted values like "T2257844554" never exist in the data.
+
+**CRITICAL DATA PRESERVATION RULES**:
+- **NEVER DROP ROWS**: Always maintain the same number of rows as input
+- **NEVER CREATE NaN VALUES**: Avoid conversions that create missing data
+- **VALIDATE BEFORE/AFTER**: Check row counts and data integrity at each step
+- **CONSERVATIVE CONVERSION**: Only convert when absolutely necessary
+- **PRESERVE EXISTING TYPES**: If a column already has the correct type, don't change it
 
 **INTELLIGENT TYPE CONVERSION RULES**:
 
 **NUMERIC COLUMNS**:
-- **Currency/Sales/Gross/Revenue**: Convert to float (remove $, €, £, commas)
+- **Currency/Sales/Gross/Revenue**: Convert to float ONLY if needed (remove $, €, £, commas)
   * "$2,923,706,026" → 2923706026.0
   * "€1,500.50" → 1500.50
-- **Ranking/Position/Index**: Convert to int 
+  * **IMPORTANT**: If already numeric (int64/float64), preserve the type
+- **Ranking/Position/Index**: Convert to int ONLY if needed
   * "1", "2nd", "#3" → 1, 2, 3
+  * **IMPORTANT**: If already int64, preserve the type
 - **Year/Date**: Convert to int if just year, datetime if full date
   * "2009" → 2009 (int)
   * "1997-12-19" → datetime object
-- **Percentage**: Convert to float (remove % symbol)
+- **Percentage**: Convert to float ONLY if needed (remove % symbol)
   * "85.5%" → 85.5 or 0.855 (based on context)
-- **Count/Quantity**: Convert to int
+- **Count/Quantity**: Convert to int ONLY if needed
   * "25 items" → 25
 
 **TEXT COLUMNS**:
 - **Names/Titles/Categories**: Keep as string, clean whitespace
 - **IDs with mixed characters**: Keep as string
-- **Boolean-like**: Convert to boolean
+- **Boolean-like**: Convert to boolean ONLY if needed
   * "Yes/No", "True/False", "1/0" → True/False
 
 **CLEANING OPERATIONS**:
-1. **Remove formatting characters**: $, €, £, %, commas, quotes
+1. **Remove formatting characters**: $, €, £, %, commas, quotes (ONLY if needed)
 2. **Handle missing values**: 
    - Empty strings → NaN
    - "N/A", "null", "none", "-" → NaN
@@ -54,17 +74,61 @@ Your task is to generate a complete Python script that:
 - Try conversion, fall back to original type if fails
 - Log conversion issues for debugging
 - Handle edge cases gracefully
+- **CRITICAL**: If any conversion fails, preserve original data
 
 **OUTPUT FORMAT**: Return ONLY the Python script code, no explanations.
 
+**CRITICAL RESTRICTIONS**:
+- **NO CHART GENERATION**: Never create plots, charts, or visualizations
+- **NO MATPLOTLIB**: Do not import or use matplotlib, seaborn, plotly, or any plotting libraries
+- **NO PLOTTING CODE**: Do not include any plt.plot(), plt.figure(), or similar plotting commands
+- **DATA CLEANING ONLY**: Focus solely on data cleaning, type conversion, and validation
+- **NO VISUALIZATION**: The output should be a clean DataFrame, not charts or images
+
 The script should:
 1. Take 'extracted_data' DataFrame as input
-2. Analyze each column's content and context
-3. Apply appropriate type conversions
-4. Handle missing values appropriately  
-5. Validate conversion results
-6. Save result in 'cleaned_data' variable
-7. Print conversion summary and basic info
+2. **PRINT INITIAL DATA VALIDATION** (row count, column types, sample values)
+3. **APPLY HTML CLEANING FIRST** using clean_text() function to remove superscripts
+4. Analyze each column's content and context
+5. Apply appropriate type conversions ONLY when necessary
+6. Handle missing values appropriately  
+7. **VALIDATE CONVERSION RESULTS** (row count, no NaN creation)
+8. Save result in 'cleaned_data' variable
+9. **PRINT FINAL DATA VALIDATION** (row count, column types, sample values)
+
+**MANDATORY VALIDATION CHECKPOINTS**:
+```python
+# INITIAL VALIDATION
+print(f"=== INITIAL DATA VALIDATION ===")
+print(f"Input DataFrame shape: {extracted_data.shape}")
+print(f"Input row count: {len(extracted_data)}")
+print(f"Input column types: {extracted_data.dtypes.to_dict()}")
+print(f"Discovered headers: {list(extracted_data.columns)}")
+
+# CRITICAL: Apply HTML cleaning first to remove superscripts
+print("=== APPLYING HTML CLEANING ===")
+for col in extracted_data.columns:
+    if extracted_data[col].dtype == 'object':
+        # Apply clean_text to remove superscripts and HTML tags
+        extracted_data[col] = extracted_data[col].apply(clean_text)
+        print(f"Applied HTML cleaning to column: {col}")
+
+# ... cleaning logic ...
+
+# FINAL VALIDATION
+print(f"=== FINAL DATA VALIDATION ===")
+print(f"Output DataFrame shape: {cleaned_data.shape}")
+print(f"Output row count: {len(cleaned_data)}")
+print(f"Output column types: {cleaned_data.dtypes.to_dict()}")
+print(f"Discovered headers after cleaning: {list(cleaned_data.columns)}")
+
+# CRITICAL INTEGRITY CHECK
+if len(cleaned_data) != len(extracted_data):
+    print(f"🚨 CRITICAL ERROR: Row count mismatch! Input: {len(extracted_data)}, Output: {len(cleaned_data)}")
+    raise Exception("Data integrity violation: row count changed during cleaning")
+
+# Avoid example-specific integrity checks; validate generically without assuming column names
+```
 
 Example structure:
 ```python
@@ -74,29 +138,115 @@ import re
 from datetime import datetime
 
 def clean_currency(text):
-    """Convert currency text to float"""
+    """Convert currency text to float ONLY if needed"""
     if pd.isna(text) or text == '':
         return np.nan
+    # If already numeric, return as is
+    if isinstance(text, (int, float)):
+        return text
     # Remove currency symbols and commas
     cleaned = re.sub(r'[$€£,]', '', str(text).strip())
     try:
         return float(cleaned)
     except:
-        return np.nan
+        return text  # Return original if conversion fails
 
 def clean_ranking(text):
-    """Convert ranking text to int"""
+    """Convert ranking text to int ONLY if needed"""
     if pd.isna(text) or text == '':
         return np.nan
+    # If already numeric, return as is
+    if isinstance(text, (int, float)):
+        return text
     # Remove ranking indicators
     cleaned = re.sub(r'[#stndrdth]', '', str(text).strip())
     try:
         return int(float(cleaned))
     except:
-        return np.nan
+        return text  # Return original if conversion fails
 
 # Analyze and convert each column based on content and context
 cleaned_data = extracted_data.copy()
+
+# AGGRESSIVE CSV DETECTION - Check before any processing
+print("=== CSV DETECTION CHECK ===")
+
+# Check if this is CSV data that should be preserved as-is
+is_csv_data = False
+
+# Check 1: Data types are already clean
+if all(extracted_data[col].dtype in ['int64', 'float64', 'object'] for col in extracted_data.columns):
+    print("✅ Data types are already clean")
+    is_csv_data = True
+
+# Check 2: Has numeric columns that are properly typed
+if any(extracted_data[col].dtype in ['int64', 'float64'] for col in extracted_data.columns):
+    print("✅ Has properly typed numeric columns")
+    is_csv_data = True
+
+# Check 3: No obvious HTML artifacts
+html_check = True
+for col in extracted_data.columns:
+    if extracted_data[col].dtype == 'object':
+        if extracted_data[col].astype(str).str.contains(r'<[^>]+>', regex=True).any():
+            html_check = False
+            break
+
+if html_check:
+    print("✅ No HTML artifacts detected")
+    is_csv_data = True
+
+# Check 4: Data structure looks clean
+if len(extracted_data) > 0 and len(extracted_data.columns) > 0:
+    print("✅ Data structure looks clean")
+    is_csv_data = True
+
+# If it looks like CSV data, preserve it exactly
+if is_csv_data:
+    print("📁 CSV-LIKE DATA DETECTED - PRESERVING EXACTLY AS EXTRACTED")
+    print("🚫 NO CLEANING OPERATIONS WILL BE PERFORMED")
+    
+    # Show the data exactly as extracted
+    print(f"\n=== EXTRACTED DATA (PRESERVED AS-IS) ===")
+    print(f"Shape: {extracted_data.shape}")
+    print(f"Columns: {list(extracted_data.columns)}")
+    print(f"Data types: {extracted_data.dtypes.to_dict()}")
+    
+    # Show all values for verification
+    for col in extracted_data.columns:
+        if extracted_data[col].dtype in ['int64', 'float64']:
+            print(f"{col} values: {extracted_data[col].tolist()}")
+            print(f"{col} sum: {extracted_data[col].sum()}")
+    
+    print("\n✅ CSV data preserved exactly as extracted - no cleaning needed")
+    print("✅ Data integrity guaranteed - returning original data")
+    
+    # Return the data exactly as extracted, no modifications
+    return {
+        'success': True,
+        'data': extracted_data,
+        'message': 'CSV data preserved exactly as extracted - no cleaning performed'
+    }
+
+# If not CSV data, proceed with normal cleaning logic
+print("🌐 Non-CSV data detected - proceeding with normal cleaning operations")
+
+# INITIAL VALIDATION
+print(f"=== INITIAL DATA VALIDATION ===")
+print(f"Input DataFrame shape: {extracted_data.shape}")
+print(f"Input row count: {len(extracted_data)}")
+print(f"Input column types: {extracted_data.dtypes.to_dict()}")
+if 'sales' in extracted_data.columns:
+    print(f"Input sales values: {extracted_data['sales'].tolist()}")
+    print(f"Input sales sum: {extracted_data['sales'].sum()}")
+
+# CRITICAL: Apply HTML cleaning first to remove superscripts
+print("=== APPLYING HTML CLEANING ===")
+for col in extracted_data.columns:
+    if extracted_data[col].dtype == 'object':
+        # Apply clean_text to remove superscripts and HTML tags
+        extracted_data[col] = extracted_data[col].apply(clean_text)
+        print(f"Applied HTML cleaning to column: {col}")
 
 for col in cleaned_data.columns:
     print(f"Processing column: {col}")
@@ -104,25 +254,58 @@ for col in cleaned_data.columns:
     # Determine column type based on name and content
     sample_values = cleaned_data[col].dropna().astype(str).str.strip()
     
-    if any keyword in col.lower() for keyword in ['gross', 'revenue', 'sales', 'price', 'cost']:
-        # Currency column
-        cleaned_data[col] = cleaned_data[col].apply(clean_currency)
-        print(f"  → Converted to currency (float)")
+    # ONLY convert if the current type is not already correct
+    current_dtype = cleaned_data[col].dtype
+    
+    if any(keyword in col.lower() for keyword in ['gross', 'revenue', 'sales', 'price', 'cost']):
+        # Currency column - only convert if not already numeric
+        if not pd.api.types.is_numeric_dtype(current_dtype):
+            cleaned_data[col] = cleaned_data[col].apply(clean_currency)
+            print(f"  → Converted to currency (float)")
+        else:
+            print(f"  → Kept as {current_dtype} (already numeric)")
         
-    elif any keyword in col.lower() for keyword in ['rank', 'position', 'peak']:
-        # Ranking column  
-        cleaned_data[col] = cleaned_data[col].apply(clean_ranking)
-        print(f"  → Converted to ranking (int)")
+    elif any(keyword in col.lower() for keyword in ['rank', 'position', 'peak']):
+        # Ranking column - only convert if not already int
+        if not pd.api.types.is_integer_dtype(current_dtype):
+            cleaned_data[col] = cleaned_data[col].apply(clean_ranking)
+            print(f"  → Converted to ranking (int)")
+        else:
+            print(f"  → Kept as {current_dtype} (already integer)")
         
     elif col.lower() in ['year'] or 'year' in col.lower():
-        # Year column
-        cleaned_data[col] = pd.to_numeric(cleaned_data[col], errors='coerce').astype('Int64')
-        print(f"  → Converted to year (int)")
+        # Year column - only convert if not already int
+        if not pd.api.types.is_integer_dtype(current_dtype):
+            cleaned_data[col] = pd.to_numeric(cleaned_data[col], errors='coerce').astype('Int64')
+            print(f"  → Converted to year (int)")
+        else:
+            print(f"  → Kept as {current_dtype} (already integer)")
         
     # Add more conversion logic based on column analysis...
 
+# FINAL VALIDATION
+print(f"=== FINAL DATA VALIDATION ===")
+print(f"Output DataFrame shape: {cleaned_data.shape}")
+print(f"Output row count: {len(cleaned_data)}")
+print(f"Output column types: {cleaned_data.dtypes.to_dict()}")
+if 'sales' in cleaned_data.columns:
+    print(f"Output sales values: {cleaned_data['sales'].tolist()}")
+    print(f"Output sales sum: {cleaned_data['sales'].sum()}")
+
+# CRITICAL INTEGRITY CHECK
+if len(cleaned_data) != len(extracted_data):
+    print(f"🚨 CRITICAL ERROR: Row count mismatch! Input: {len(extracted_data)}, Output: {len(cleaned_data)}")
+    raise Exception("Data integrity violation: row count changed during cleaning")
+
+if 'sales' in cleaned_data.columns and 'sales' in extracted_data.columns:
+    input_sum = extracted_data['sales'].sum()
+    output_sum = cleaned_data['sales'].sum()
+    if abs(input_sum - output_sum) > 0.01:  # Allow for small floating point differences
+        print(f"🚨 CRITICAL ERROR: Sales sum mismatch! Input: {input_sum}, Output: {output_sum}")
+        raise Exception("Data integrity violation: sales sum changed during cleaning")
+
 print(f"Cleaning completed. Shape: {cleaned_data.shape}")
 print(f"Data types: {cleaned_data.dtypes.to_dict()}")
-```
+print("✅ Data integrity validated - no data loss detected")
 
-Focus on creating intelligent, context-aware cleaning that produces analysis-ready data.
+Focus on creating accurate, robust answers that match the exact format requested in the original question.

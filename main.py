@@ -6,6 +6,60 @@ from llm_helper import breakdown_question, get_data_metadata, extract_data, clea
 
 app = FastAPI()
 
+# Utility: Make objects JSON-serializable (numpy/pandas → native Python)
+def make_json_safe(value):
+    try:
+        # Lazy imports to avoid hard dependencies at module import time
+        import numpy as _np  # type: ignore
+        import pandas as _pd  # type: ignore
+    except Exception:
+        _np = None
+        _pd = None
+
+    from datetime import datetime, date
+
+    # Primitives
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    # Datetime/Date
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    # Numpy scalars/arrays
+    if _np is not None:
+        if isinstance(value, _np.generic):
+            try:
+                return value.item()
+            except Exception:
+                return str(value)
+        if isinstance(value, _np.ndarray):
+            return make_json_safe(value.tolist())
+
+    # Pandas objects
+    if _pd is not None:
+        if isinstance(value, _pd.Timestamp):
+            return value.isoformat()
+        if hasattr(_pd, 'Timedelta') and isinstance(value, _pd.Timedelta):
+            return str(value)
+        if isinstance(value, _pd.Series):
+            return make_json_safe(value.tolist())
+        if isinstance(value, _pd.DataFrame):
+            # Records for easy JSON
+            return make_json_safe(value.to_dict(orient='records'))
+
+    # Collections
+    if isinstance(value, dict):
+        return {str(make_json_safe(k)): make_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [make_json_safe(v) for v in value]
+
+    # Fallback: try vars(); otherwise string
+    try:
+        return make_json_safe(vars(value))
+    except Exception:
+        return str(value)
+
 # Add CORS middleware to allow access from any origin
 app.add_middleware(
     CORSMiddleware,
@@ -155,16 +209,43 @@ async def analyze_data(request: Request):
         # Step 6: Generate charts if required
         chart_data = None
         
+        # Single chart detection logic - consolidate all checks here
+        charts_needed = False
         try:
+            # Check chart_requirements first
             chart_requirements = breakdown.get('chart_requirements', {})
-            response_format = breakdown.get('response_format', {})
             charts_needed = chart_requirements.get('needed', False)
-            format_description = str(response_format.get('description', ''))
             
+            # Check response format for chart fields
+            response_format = breakdown.get('response_format', {})
+            format_description = str(response_format.get('description', ''))
+            example = response_format.get('example', '')
+            
+            # Check if response format contains chart fields
             if format_description and ('chart' in format_description.lower() or 'base64' in format_description.lower()):
                 charts_needed = True
+            
+            # Check example dict for chart keys
+            if isinstance(example, dict):
+                chart_keys = [key for key in example.keys() if 'chart' in key.lower()]
+                if chart_keys:
+                    charts_needed = True
+            
+            # Check tasks for chart type questions
+            tasks = breakdown.get('tasks', [])
+            for task in tasks:
+                if task.get('type') == 'chart':
+                    charts_needed = True
+                    break
+                # Also infer charts when question text implies drawing/plotting/graphing
+                q_text = str(task.get('question', '')).lower()
+                if any(tok in q_text for tok in ['draw', 'plot', 'graph']):
+                    charts_needed = True
+                    break
+                    
         except Exception as e:
             charts_needed = False
+            print(f"Chart detection error: {e}")
             
         if charts_needed:
             print("=== GENERATING CHARTS ===")
@@ -175,12 +256,21 @@ async def analyze_data(request: Request):
                 chart_data = chart_result.get('data')
                 if chart_data:
                     print("✅ Chart generation successful!")
+                    print(f"🔍 Raw chart data type: {type(chart_data)}")
+                    if isinstance(chart_data, dict):
+                        print(f"🔍 Raw chart data keys: {list(chart_data.keys())}")
+                        for key, value in chart_data.items():
+                            if isinstance(value, str) and value.startswith('data:image/png;base64'):
+                                print(f"🔍 {key}: Chart data length = {len(value)}")
                     
                     # Handle different chart data types
                     if isinstance(chart_data, dict):
                         # Multiple charts - merge into answers dict
                         if isinstance(answers, dict):
+                            print(f"🔍 Before merging charts: answers keys = {list(answers.keys())}")
+                            print(f"🔍 Charts to merge: {list(chart_data.keys())}")
                             answers.update(chart_data)
+                            print(f"🔍 After merging charts: answers keys = {list(answers.keys())}")
                         print(f"Generated {len(chart_data)} charts")
                     elif isinstance(chart_data, str):
                         # Single chart
@@ -203,11 +293,39 @@ async def analyze_data(request: Request):
         # Step 7: Format final response exactly as requested in question.txt
         response_format = breakdown.get('response_format', {})
         tasks = breakdown.get('tasks', [])
-        chart_needed = breakdown.get('chart_requirements', {}).get('needed', False)
+        
+        # Remove duplicate chart detection - already handled above
+        # chart_needed = breakdown.get('chart_requirements', {}).get('needed', False)
         
         # If we have answers, use them; otherwise create intelligent fallbacks
-        if answers and ((isinstance(answers, list) and len(answers) > 0) or (isinstance(answers, dict) and answers)):
+        # Check if we have complete answers including charts when needed
+        has_complete_answers = False
+        
+        if answers:
+            if isinstance(answers, list) and len(answers) > 0:
+                has_complete_answers = True
+            elif isinstance(answers, dict) and answers:
+                # For dict format, check if we have all required fields
+                if charts_needed:
+                    # Check if we have chart fields in the answers
+                    chart_fields = [key for key in answers.keys() if 'chart' in key.lower()]
+                    if chart_fields:
+                        has_complete_answers = True
+                        print(f"✅ Found chart fields in answers: {chart_fields}")
+                    else:
+                        print("⚠️ Charts needed but not found in answers")
+                        has_complete_answers = False
+                else:
+                    # No charts needed, just check if we have any answers
+                    has_complete_answers = True
+        
+        if has_complete_answers:
+            print("✅ Using generated answers (including charts if applicable)")
             final_response = answers
+            # Debug: Show what's in the final response
+            if isinstance(final_response, dict):
+                chart_keys = [key for key in final_response.keys() if 'chart' in key.lower()]
+                print(f"🔍 Final response contains {len(chart_keys)} chart fields: {chart_keys}")
         else:
             print("⚠️ Generating fallback response due to processing failures")
             
@@ -254,80 +372,69 @@ Format example: {str(response_format.get('example', ''))}
                             clean_response = clean_response.replace('"```json', '').replace('```json', '')
                         if clean_response.startswith('"```') or clean_response.startswith('```'):
                             clean_response = clean_response.replace('"```', '').replace('```', '')
-                        if clean_response.endswith('```"') or clean_response.endswith('```'):
-                            clean_response = clean_response.replace('```"', '').replace('```', '')
+                        if clean_response.endswith('"```') or clean_response.endswith('```'):
+                            clean_response = clean_response.replace('"```', '').replace('```', '')
                         
-                        # Remove surrounding quotes if present
-                        if clean_response.startswith('"') and clean_response.endswith('"'):
-                            clean_response = clean_response[1:-1]
-                        
-                        clean_response = clean_response.strip()
-                        print(f"Cleaned response: {repr(clean_response)}")
-                        
-                        # Try to parse as JSON if it's supposed to be JSON
-                        if response_format.get('type') in ['json_object', 'json_array']:
-                            import json
+                        # Try to parse as JSON
+                        import json
+                        try:
                             final_response = json.loads(clean_response)
-                        else:
-                            final_response = clean_response
-                    except Exception as parse_error:
-                        print(f"Fallback parsing failed: {parse_error}")
-                        # If parsing fails, use the raw response
-                        final_response = fallback_response.strip()
+                            print("✅ Fallback response parsed successfully")
+                        except json.JSONDecodeError as e:
+                            print(f"❌ Failed to parse fallback response as JSON: {e}")
+                            # Create a simple fallback
+                            final_response = {"error": "Analysis failed", "fallback": clean_response}
+                    except Exception as e:
+                        print(f"❌ Error processing fallback response: {e}")
+                        final_response = {"error": "Analysis failed", "fallback_error": str(e)}
                 else:
-                    # Ultimate fallback if LLM fails
-                    if response_format.get('type') == 'json_object':
-                        final_response = {"error": "Data analysis failed", "fallback": True}
-                    elif response_format.get('type') == 'json_array':
-                        final_response = ["Data not available", 0, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="]
-                    else:
-                        final_response = "Data analysis failed"
-                        
+                    print("❌ Fallback response generation failed")
+                    final_response = {"error": "Analysis failed", "fallback_generation_failed": True}
             except Exception as e:
-                print(f"Fallback generation failed: {e}")
-                # Ultimate fallback
-                if response_format.get('type') == 'json_object':
-                    final_response = {"error": "Data analysis failed", "fallback": True}
-                elif response_format.get('type') == 'json_array':
-                    final_response = ["Data not available", 0, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="]
-                else:
-                    final_response = "Data analysis failed"
+                print(f"❌ Error in fallback generation: {e}")
+                final_response = {"error": "Analysis failed", "fallback_error": str(e)}
         
-        # Ensure response format matches request
-        try:
-            response_type = response_format.get('type', 'json_array')
-            
-            if response_type == 'json_array':
-                if not isinstance(final_response, list):
-                    final_response = [final_response] if final_response else []
-            
-            # Return ONLY the answer in the requested format, no status wrapper
-            return final_response
-            
-        except Exception as e:
-            print(f"Error in response formatting: {e}")
-            return {"error": "Response formatting failed"}
-    
-    except Exception as e:
-        print(f"❌ Critical error in analyze_data: {str(e)}")
-        print(f"❌ Error type: {type(e)}")
-        import traceback
-        print(f"❌ Traceback: {traceback.format_exc()}")
-        # Emergency fallback - return a basic response structure
-        return {
-            "error": "Critical system error occurred",
-            "message": str(e),
-            "fallback": True
-        }
-    
-    finally:
+            # Step 8: Re-check readiness if charts were generated but keys lacked 'chart'
+        if not has_complete_answers and isinstance(answers, dict) and charts_needed:
+            # Accept presence of base64 images or common chart synonyms in keys
+            synonym_tokens = ['draw','chart', 'graph', 'hist', 'plot', 'image', 'distribution']
+            chart_like_keys = []
+            for k, v in answers.items():
+                key_has_synonym = isinstance(k, str) and any(tok in k.lower() for tok in synonym_tokens)
+                value_is_base64_img = isinstance(v, str) and v.startswith('data:image/')
+                if key_has_synonym or value_is_base64_img:
+                    chart_like_keys.append(k)
+            if chart_like_keys:
+                print(f"✅ Charts detected by value/key synonyms: {chart_like_keys}")
+                final_response = answers
+                has_complete_answers = True
+
+        # Step 9: Return the final response
+        print("=== RETURNING RESPONSE ===")
+        print(f"📤 Response type: {type(final_response)}")
+        
         # Clean up temporary files
-        import shutil
-        if 'temp_dir' in locals() and os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir)
-            except:
-                pass  # Ignore cleanup errors
+        try:
+            import shutil
+            shutil.rmtree(temp_dir)
+            print("🧹 Temporary files cleaned up")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not clean up temporary files: {e}")
+        
+        # Return just the data if it's a simple response, or the full API response if needed
+        if isinstance(final_response, (list, dict)) and not any(key in str(final_response).lower() for key in ['error', 'fallback']):
+            # Return just the data for simple successful responses (JSON-safe)
+            return make_json_safe(final_response)
+        else:
+            # Return full API response for errors or complex cases (JSON-safe)
+            return {"success": True, "data": make_json_safe(final_response)}
+        
+    except Exception as e:
+        print(f"❌ Critical error in analyze_data: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

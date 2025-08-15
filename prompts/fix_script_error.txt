@@ -77,21 +77,23 @@ if not table:
         raise Exception("No tables found on the webpage")
 ```
 
-**CRITICAL ERROR: "could not convert string to float: 'Worldwide gross'"**
+**CRITICAL ERROR: could not convert string to float: '<column name>'**
 Fix: Remove column type conversion and use robust helper functions
 
 ```python
-# WRONG - This causes the error:
-extracted_data = pd.read_html(url)[0]  # pd.read_html tries to convert headers to numbers
-extracted_data = extracted_data.astype({'Worldwide gross': 'float'})  # This fails
+# WRONG - This causes the error (examples):
+extracted_data = pd.read_html(url)[0]  # pd.read_html may coerce headers/types unexpectedly
+extracted_data = extracted_data.astype({'<some header>': 'float'})  # Forcing types on headers fails
 
-# CORRECT - Use the robust helper functions:
+# CORRECT - Use the robust helper functions and only actual extracted columns:
 table = find_table_robust(soup)
 headers = extract_headers_robust(table)  # Get actual headers as strings
 rows = extract_rows_robust(table, headers)  # Get data rows
 extracted_data = pd.DataFrame(rows, columns=headers)  # Create DataFrame with proper structure
 
 # Let pandas infer types automatically - don't force conversions
+# If you need a specific column, resolve by actual available names:
+#   actual_name = resolve_column(extracted_data, ['preferred name 1', 'preferred name 2'])
 ```
 
 Focus on creating a working, robust script that handles the specific error while maintaining the original functionality.

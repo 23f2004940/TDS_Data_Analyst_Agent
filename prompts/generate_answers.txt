@@ -48,7 +48,7 @@ The script should:
 4. Handle errors gracefully with fallback values
 5. Print basic info about results for debugging
 
-Example structure for JSON array format:
+Example structure for JSON array format (generic):
 ```python
 import pandas as pd
 import numpy as np
@@ -57,44 +57,23 @@ import numpy as np
 answers = []
 
 try:
-    # Question 1: How many $2 bn movies were released before 2000?
-    if 'Worldwide gross' in cleaned_data.columns and 'Year' in cleaned_data.columns:
-        mask = (cleaned_data['Worldwide gross'] >= 2000000000) & (cleaned_data['Year'] < 2000)
-        count = len(cleaned_data[mask])
-        answers.append(count)
-    else:
-        answers.append(0)  # Fallback
+    print(f"Available columns: {list(cleaned_data.columns)}")
+    # Implement logic per the actual questions using only available columns.
+    # Do not assume any example-specific column names.
+    # Append computed answers in order.
     
-    # Question 2: Which is the earliest film that grossed over $1.5 bn?
-    if 'Worldwide gross' in cleaned_data.columns and 'Year' in cleaned_data.columns and 'Title' in cleaned_data.columns:
-        mask = cleaned_data['Worldwide gross'] >= 1500000000
-        filtered = cleaned_data[mask]
-        if not filtered.empty:
-            earliest = filtered.loc[filtered['Year'].idxmin(), 'Title']
-            answers.append(str(earliest))
-        else:
-            answers.append("No film found")
-    else:
-        answers.append("Data not available")
-    
-    # Question 3: What's the correlation between Rank and Peak?
-    if 'Rank' in cleaned_data.columns and 'Peak' in cleaned_data.columns:
-        correlation = cleaned_data['Rank'].corr(cleaned_data['Peak'])
-        answers.append(round(correlation, 6))
-    else:
-        answers.append(0.0)
-    
-    # Add more questions as needed...
+    # Placeholder pattern (replace with real logic when generating):
+    # answers.append(computed_value)
     
     print(f"Generated {len(answers)} answers")
     print(f"Answers: {answers}")
     
 except Exception as e:
     print(f"Error generating answers: {e}")
-    answers = ["Error"] * len(questions)  # Fallback answers
+    answers = [None] * len(questions)  # Fallback answers
 ```
 
-Example structure for JSON object format:
+Example structure for JSON object format (generic):
 ```python
 import pandas as pd
 import numpy as np
@@ -103,46 +82,37 @@ import numpy as np
 answers = {}
 
 try:
+    # DATA VALIDATION CHECKPOINT - Verify we have complete data
+    print(f"=== ANSWER GENERATION DATA VALIDATION ===")
+    print(f"DataFrame shape: {cleaned_data.shape}")
+    print(f"Row count: {len(cleaned_data)}")
+    print(f"Column types: {cleaned_data.dtypes.to_dict()}")
+    
+    # Print available columns; do not assume any fixed schema
+    print(f"Available columns: {list(cleaned_data.columns)}")
+    
     # Map questions to their corresponding short key names from the response format
     
-    # Question: "What is the total sales across all regions?" → Key: "total_sales"
-    if 'sales' in cleaned_data.columns:
-        total_sales = cleaned_data['sales'].sum()
-        answers['total_sales'] = float(total_sales)
-    else:
-        answers['total_sales'] = 0.0
+    # Compute values only using actually available columns and the provided questions.
     
-    # Question: "Which region has the highest total sales?" → Key: "top_region"  
-    if 'region' in cleaned_data.columns and 'sales' in cleaned_data.columns:
-        region_sales = cleaned_data.groupby('region')['sales'].sum()
-        top_region = region_sales.idxmax() if not region_sales.empty else "Unknown"
-        answers['top_region'] = str(top_region)
-    else:
-        answers['top_region'] = "Unknown"
+    # Example-only pattern removed
     
-    # Question: "What is the correlation between day and sales?" → Key: "day_sales_correlation"
-    if 'date' in cleaned_data.columns and 'sales' in cleaned_data.columns:
-        # Extract day from date and calculate correlation
-        cleaned_data['day'] = pd.to_datetime(cleaned_data['date']).dt.day
-        correlation = cleaned_data['day'].corr(cleaned_data['sales'])
-        answers['day_sales_correlation'] = round(float(correlation), 6)
-    else:
-        answers['day_sales_correlation'] = 0.0
+    # Example-only pattern removed
     
-    # Question: "What is the median sales amount?" → Key: "median_sales"
-    if 'sales' in cleaned_data.columns:
-        median_sales = cleaned_data['sales'].median()
-        answers['median_sales'] = float(median_sales)
-    else:
-        answers['median_sales'] = 0.0
+    # Example-only pattern removed
     
+    # Example-only pattern removed
+    
+    print(f"=== FINAL ANSWER VALIDATION ===")
     print(f"Generated answers for {len(answers)} questions")
     print(f"Answers: {answers}")
     
+    # Avoid example-specific integrity checks
+    
 except Exception as e:
     print(f"Error generating answers: {e}")
-    # Create fallback with short key names
-    answers = {"total_sales": 0.0, "top_region": "Unknown", "day_sales_correlation": 0.0, "median_sales": 0.0}
+    # Create generic fallback with empty or neutral values
+    answers = {}
 ```
 
 Focus on creating accurate, robust answers that match the exact format requested in the original question.
