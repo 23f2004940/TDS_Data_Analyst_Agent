@@ -413,6 +413,63 @@ Format example: {str(response_format.get('example', ''))}
         print("=== RETURNING RESPONSE ===")
         print(f"📤 Response type: {type(final_response)}")
         
+        # Normalize chart image fields based on question requirements
+        # Only add the data URI prefix if the response format explicitly contains
+        # the exact pattern 'data:image/png;base64'. Otherwise return raw base64.
+        try:
+            desc = str(response_format.get('description', '')).lower()
+            example_field = response_format.get('example', '')
+            example_text = ''
+            if isinstance(example_field, dict):
+                try:
+                    example_text = ' '.join(map(str, example_field.values()))
+                except Exception:
+                    example_text = str(example_field)
+            else:
+                example_text = str(example_field)
+            
+            # Stricter condition: require exact 'data:image/png;base64'
+            desc_lc = desc
+            ex_lc = example_text.lower()
+            require_data_uri = ('data:image/png;base64' in desc_lc) or ('data:image/png;base64' in ex_lc)
+
+            def normalize_chart_images(obj, need_data_uri):
+                # Recursively normalize strings in dicts/lists
+                if isinstance(obj, dict):
+                    for key, value in list(obj.items()):
+                        if isinstance(value, str):
+                            is_data_uri = value.startswith('data:image/')
+                            if need_data_uri:
+                                # Ensure PNG data URI prefix
+                                if not value.startswith('data:image/png;base64,'):
+                                    if is_data_uri and ',' in value:
+                                        obj[key] = 'data:image/png;base64,' + value.split(',', 1)[1]
+                                    elif not value.startswith('data:'):
+                                        obj[key] = 'data:image/png;base64,' + value
+                            else:
+                                # Strip any data URI prefix to raw base64
+                                if is_data_uri and ',' in value:
+                                    obj[key] = value.split(',', 1)[1]
+                        elif isinstance(value, (dict, list)):
+                            normalize_chart_images(value, need_data_uri)
+                elif isinstance(obj, list):
+                    for idx, item in enumerate(list(obj)):
+                        if isinstance(item, str):
+                            is_data_uri = item.startswith('data:image/')
+                            if need_data_uri:
+                                if not item.startswith('data:image/png;base64,'):
+                                    if is_data_uri and ',' in item:
+                                        obj[idx] = 'data:image/png;base64,' + item.split(',', 1)[1]
+                                    elif not item.startswith('data:'):
+                                        obj[idx] = 'data:image/png;base64,' + item
+                            else:
+                                if is_data_uri and ',' in item:
+                                    obj[idx] = item.split(',', 1)[1]
+
+            normalize_chart_images(final_response, require_data_uri)
+        except Exception as e:
+            print(f"Chart normalization error: {e}")
+        
         # Clean up temporary files
         try:
             import shutil
