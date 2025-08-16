@@ -31,7 +31,7 @@ Your task is to generate a complete Python script that:
 **BASE64 CONVERSION**:
 - Save chart to BytesIO buffer
 - Convert to base64 string
-- Format as data URI: "data:image/png;base64,..."
+- Return raw base64 string (no data URI prefix)
 - Optimize for size constraints
 
 **SIZE OPTIMIZATION**:
@@ -107,7 +107,7 @@ try:
         
         # Encode to base64
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        chart_base64 = f"data:image/png;base64,{image_base64}"
+        chart_base64 = image_base64
         
         # Check size constraint (under 100,000 bytes if specified)
         if len(chart_base64) > 100000:
@@ -124,12 +124,12 @@ try:
         
     else:
         print("Required columns not found for chart")
-        chart_base64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        chart_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
         
 except Exception as e:
     print(f"Error generating chart: {e}")
     # Fallback: 1x1 transparent PNG
-    chart_base64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    chart_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 ```
 
 Example for multiple charts (JSON object format):
@@ -161,7 +161,7 @@ try:
         plt.savefig(buffer, format='png', bbox_inches='tight', dpi=100)
         buffer.seek(0)
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        charts['bar_chart'] = f"data:image/png;base64,{image_base64}"
+        charts['bar_chart'] = image_base64
         plt.close()
     
     # Chart 2: Cumulative sales chart
@@ -180,7 +180,7 @@ try:
         plt.savefig(buffer, format='png', bbox_inches='tight', dpi=100)
         buffer.seek(0)
         image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        charts['cumulative_sales_chart'] = f"data:image/png;base64,{image_base64}"
+        charts['cumulative_sales_chart'] = image_base64
         plt.close()
     
     # Set the result - for multiple charts, use the dictionary
