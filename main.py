@@ -20,6 +20,14 @@ def make_json_safe(value):
 
     # Primitives
     if value is None or isinstance(value, (str, int, float, bool)):
+        # Handle infinity values for floats
+        if isinstance(value, float):
+            if value == float('inf'):
+                return "infinity"
+            elif value == float('-inf'):
+                return "-infinity"
+            elif value != value:  # NaN check
+                return "NaN"
         return value
 
     # Datetime/Date
@@ -394,7 +402,7 @@ Format example: {str(response_format.get('example', ''))}
                 print(f"❌ Error in fallback generation: {e}")
                 final_response = {"error": "Analysis failed", "fallback_error": str(e)}
         
-            # Step 8: Re-check readiness if charts were generated but keys lacked 'chart'
+        # Step 8: Re-check readiness if charts were generated but keys lacked 'chart'
         if not has_complete_answers and isinstance(answers, dict) and charts_needed:
             # Accept presence of base64 images or common chart synonyms in keys
             synonym_tokens = ['draw','chart', 'graph', 'hist', 'plot', 'image', 'distribution']
@@ -444,6 +452,27 @@ Format example: {str(response_format.get('example', ''))}
             print("🧹 Temporary files cleaned up")
         except Exception as e:
             print(f"⚠️ Warning: Could not clean up temporary files: {e}")
+        
+        # Debug: Check for problematic values before returning
+        print("🔍 Debug: Checking response for problematic values...")
+        def check_for_problematic_values(obj, path=""):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    check_for_problematic_values(value, f"{path}.{key}")
+            elif isinstance(obj, list):
+                for i, value in enumerate(obj):
+                    check_for_problematic_values(value, f"{path}[{i}]")
+            elif isinstance(obj, float):
+                if obj == float('inf'):
+                    print(f"⚠️ Found inf at {path}: {obj}")
+                elif obj == float('-inf'):
+                    print(f"⚠️ Found -inf at {path}: {obj}")
+                elif obj != obj:  # NaN
+                    print(f"⚠️ Found NaN at {path}: {obj}")
+            elif isinstance(obj, str) and 'inf' in str(obj).lower():
+                print(f"⚠️ Found potential inf string at {path}: {obj}")
+
+        check_for_problematic_values(final_response)
         
         # Return just the data if it's a simple response, or the full API response if needed
         if isinstance(final_response, (list, dict)) and not any(key in str(final_response).lower() for key in ['error', 'fallback']):
